@@ -1,0 +1,437 @@
+"use client";
+
+import type { Worksheet } from "exceljs";
+import {
+  AlertCircle,
+  Check,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  LoaderCircle,
+  Plus,
+  RotateCcw,
+  ShieldCheck,
+  Upload,
+  X,
+} from "lucide-react";
+import {
+  type ChangeEvent,
+  type DragEvent,
+  type FormEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  columnToNumber,
+  normalizeColumn,
+  outputFileName,
+  processSheet,
+  type SheetResult,
+} from "./excel-transform";
+
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const EXCEL_MIME =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+type Stage = "idle" | "reading" | "ready" | "processing" | "done" | "error";
+
+type ProcessResult = {
+  sheets: SheetResult[];
+  splitRows: number;
+  addedRows: number;
+  outputName: string;
+};
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function triggerDownload(url: string, name: string) {
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+export default function Home() {
+  const [file, setFile] = useState<File | null>(null);
+  const [columns, setColumns] = useState(["D", "E"]);
+  const [applyAllSheets, setApplyAllSheets] = useState(true);
+  const [sheetNames, setSheetNames] = useState<string[]>([]);
+  const [selectedSheet, setSelectedSheet] = useState("");
+  const [stage, setStage] = useState<Stage>("idle");
+  const [isDragging, setIsDragging] = useState(false);
+  const [showColumnInput, setShowColumnInput] = useState(false);
+  const [newColumn, setNewColumn] = useState("");
+  const [columnError, setColumnError] = useState("");
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<ProcessResult | null>(null);
+  const [downloadUrl, setDownloadUrl] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const bufferRef = useRef<ArrayBuffer | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    };
+  }, [downloadUrl]);
+
+  const clearOutput = () => {
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    setDownloadUrl("");
+    setResult(null);
+  };
+
+  const inspectFile = async (nextFile: File) => {
+    clearOutput();
+    setError("");
+    if (!/\.xlsx$/i.test(nextFile.name)) {
+      setStage("error");
+      setError(".xlsx 형식의 엑셀 파일만 사용할 수 있습니다.");
+      return;
+    }
+    if (nextFile.size > MAX_FILE_SIZE) {
+      setStage("error");
+      setError("파일 크기는 50MB를 넘을 수 없습니다.");
+      return;
+    }
+
+    setStage("reading");
+    try {
+      const ExcelJS = await import("exceljs");
+      const buffer = await nextFile.arrayBuffer();
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      const names = workbook.worksheets.map((sheet) => sheet.name);
+      if (names.length === 0) throw new Error("시트 없음");
+      bufferRef.current = buffer;
+      setFile(nextFile);
+      setSheetNames(names);
+      setSelectedSheet(names[0]);
+      setStage("ready");
+    } catch {
+      bufferRef.current = null;
+      setFile(null);
+      setSheetNames([]);
+      setStage("error");
+      setError("파일을 읽지 못했습니다. 손상되지 않은 .xlsx 파일인지 확인해 주세요.");
+    }
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextFile = event.target.files?.[0];
+    if (nextFile) void inspectFile(nextFile);
+    event.target.value = "";
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const nextFile = event.dataTransfer.files?.[0];
+    if (nextFile) void inspectFile(nextFile);
+  };
+
+  const handleUploadKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      inputRef.current?.click();
+    }
+  };
+
+  const addColumn = (event: FormEvent) => {
+    event.preventDefault();
+    const normalized = normalizeColumn(newColumn);
+    if (!normalized) {
+      setColumnError("A부터 XFD 사이의 열 문자를 입력해 주세요.");
+      return;
+    }
+    if (columns.includes(normalized)) {
+      setColumnError("이미 등록된 열입니다.");
+      return;
+    }
+    clearOutput();
+    setColumns((current) =>
+      [...current, normalized].sort(
+        (a, b) => columnToNumber(a) - columnToNumber(b),
+      ),
+    );
+    setNewColumn("");
+    setColumnError("");
+    setShowColumnInput(false);
+    if (file) setStage("ready");
+  };
+
+  const removeColumn = (column: string) => {
+    if (columns.length === 1) return;
+    clearOutput();
+    setColumns((current) => current.filter((item) => item !== column));
+    if (file) setStage("ready");
+  };
+
+  const runProcess = async () => {
+    if (!file || !bufferRef.current || columns.length === 0 || stage === "processing") return;
+    clearOutput();
+    setError("");
+    setStage("processing");
+
+    try {
+      const ExcelJS = await import("exceljs");
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(bufferRef.current.slice(0));
+      const columnNumbers = columns.map(columnToNumber);
+      const targetSheets = applyAllSheets
+        ? workbook.worksheets
+        : [workbook.getWorksheet(selectedSheet)].filter(
+            (sheet): sheet is Worksheet => Boolean(sheet),
+          );
+      if (targetSheets.length === 0) throw new Error("처리할 시트를 찾지 못했습니다.");
+
+      const sheets = targetSheets.map((sheet) => processSheet(sheet, columnNumbers));
+      workbook.calcProperties.fullCalcOnLoad = true;
+      const output = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([output as BlobPart], { type: EXCEL_MIME });
+      const url = URL.createObjectURL(blob);
+      const name = outputFileName(file.name);
+      const summary: ProcessResult = {
+        sheets,
+        splitRows: sheets.reduce((sum, sheet) => sum + sheet.splitRows, 0),
+        addedRows: sheets.reduce((sum, sheet) => sum + sheet.addedRows, 0),
+        outputName: name,
+      };
+      setDownloadUrl(url);
+      setResult(summary);
+      setStage("done");
+      triggerDownload(url, name);
+    } catch (caught) {
+      setStage("error");
+      setError(
+        caught instanceof Error && caught.message
+          ? `처리하지 못했습니다: ${caught.message}`
+          : "파일 처리 중 오류가 발생했습니다.",
+      );
+    }
+  };
+
+  const reset = () => {
+    clearOutput();
+    bufferRef.current = null;
+    setFile(null);
+    setSheetNames([]);
+    setSelectedSheet("");
+    setError("");
+    setStage("idle");
+  };
+
+  const primaryLabel =
+    stage === "reading"
+      ? "파일 확인 중"
+      : stage === "processing"
+        ? "행을 분리하는 중"
+        : !file
+          ? "파일을 먼저 선택하세요"
+          : stage === "done"
+            ? "현재 설정으로 다시 처리"
+            : "행 분리 및 다운로드";
+  const step = file ? (stage === "processing" || stage === "done" ? 3 : 2) : 1;
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              <FileSpreadsheet size={34} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h1>엑셀 행 분리기</h1>
+              <p>줄바꿈 자료를 한 항목당 한 행으로 정리합니다.</p>
+            </div>
+          </div>
+          <div className="privacy-note">
+            <ShieldCheck size={22} aria-hidden="true" />
+            <span>파일은 브라우저 안에서만 처리됩니다</span>
+          </div>
+        </div>
+      </header>
+
+      <main className="workspace">
+        <section className="card upload-card" aria-labelledby="upload-title">
+          <input
+            ref={inputRef}
+            id="excel-file"
+            className="sr-only"
+            type="file"
+            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={handleFileChange}
+          />
+          <div
+            className={`drop-zone ${isDragging ? "is-dragging" : ""} ${file ? "has-file" : ""}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => inputRef.current?.click()}
+            onKeyDown={handleUploadKey}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragging(false);
+            }}
+            onDrop={handleDrop}
+          >
+            <span className="upload-icon" aria-hidden="true">
+              {file ? <FileSpreadsheet size={42} /> : <Upload size={42} />}
+            </span>
+            {file ? (
+              <>
+                <h2 id="upload-title">{file.name}</h2>
+                <p>{formatBytes(file.size)} · 시트 {sheetNames.length}개</p>
+                <span className="file-action">다른 파일 선택</span>
+              </>
+            ) : (
+              <>
+                <h2 id="upload-title">파일을 여기에 끌어 놓으세요</h2>
+                <p>또는 클릭하여 .xlsx 파일 선택</p>
+                <span className="size-badge">최대 50MB</span>
+              </>
+            )}
+          </div>
+        </section>
+
+        <section className="card criteria-card" aria-labelledby="criteria-title">
+          <div className="section-heading">
+            <div>
+              <h2 id="criteria-title">분리 기준</h2>
+              <p>선택한 열의 Alt+Enter 줄바꿈을 같은 순서로 나눕니다.</p>
+            </div>
+            <label className="toggle-label">
+              <span>모든 시트 적용</span>
+              <button
+                type="button"
+                className={`toggle ${applyAllSheets ? "is-on" : ""}`}
+                role="switch"
+                aria-checked={applyAllSheets}
+                onClick={() => {
+                  clearOutput();
+                  setApplyAllSheets((current) => !current);
+                  if (file) setStage("ready");
+                }}
+              >
+                <span />
+              </button>
+            </label>
+          </div>
+
+          <div className="column-section">
+            <span className="field-label">대상 열</span>
+            <div className="column-controls">
+              {columns.map((column) => (
+                <span className="column-chip" key={column}>
+                  <strong>{column}</strong>
+                  <button
+                    type="button"
+                    aria-label={`${column}열 삭제`}
+                    title={columns.length === 1 ? "기준 열은 하나 이상 필요합니다" : `${column}열 삭제`}
+                    disabled={columns.length === 1}
+                    onClick={() => removeColumn(column)}
+                  >
+                    <X size={18} />
+                  </button>
+                </span>
+              ))}
+
+              {showColumnInput ? (
+                <form className="column-form" onSubmit={addColumn}>
+                  <input
+                    autoFocus
+                    value={newColumn}
+                    maxLength={3}
+                    aria-label="추가할 열 문자"
+                    placeholder="예: F"
+                    onChange={(event) => {
+                      setNewColumn(event.target.value.toUpperCase());
+                      setColumnError("");
+                    }}
+                  />
+                  <button type="submit" aria-label="열 추가 확인"><Check size={18} /></button>
+                  <button
+                    type="button"
+                    aria-label="열 추가 취소"
+                    onClick={() => {
+                      setShowColumnInput(false);
+                      setNewColumn("");
+                      setColumnError("");
+                    }}
+                  ><X size={18} /></button>
+                </form>
+              ) : (
+                <button type="button" className="add-column" onClick={() => setShowColumnInput(true)}>
+                  <Plus size={19} /> 열 추가
+                </button>
+              )}
+            </div>
+            {columnError && <p className="inline-error">{columnError}</p>}
+          </div>
+
+          {!applyAllSheets && file && (
+            <label className="sheet-select">
+              <span>처리할 시트</span>
+              <select value={selectedSheet} onChange={(event) => setSelectedSheet(event.target.value)}>
+                {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </label>
+          )}
+
+          <div className="rule-row">
+            <span>적용 규칙</span>
+            <p>한 줄 값은 필요한 만큼 반복 · 항목이 부족한 칸은 비움 · 다른 셀은 그대로 복제</p>
+          </div>
+        </section>
+
+        {error && <div className="message error-message" role="alert"><AlertCircle size={20} /><span>{error}</span></div>}
+
+        <button
+          type="button"
+          className="primary-button"
+          disabled={!file || stage === "reading" || stage === "processing"}
+          onClick={() => void runProcess()}
+        >
+          {stage === "reading" || stage === "processing" ? <LoaderCircle className="spinner" size={22} /> : stage === "done" ? <RotateCcw size={21} /> : <Download size={21} />}
+          {primaryLabel}
+        </button>
+
+        {result && (
+          <section className="card result-card" aria-live="polite">
+            <div className="result-icon"><CheckCircle2 size={30} /></div>
+            <div className="result-copy">
+              <h2>행 분리가 완료되었습니다</h2>
+              <p>{result.sheets.length}개 시트에서 {result.splitRows}개 행을 나누고, 새 행 {result.addedRows}개를 만들었습니다.</p>
+              <div className="sheet-summary">
+                {result.sheets.map((sheet) => <span key={sheet.name}>{sheet.name} <strong>+{sheet.addedRows}</strong></span>)}
+              </div>
+            </div>
+            <button type="button" className="download-again" onClick={() => triggerDownload(downloadUrl, result.outputName)}><Download size={18} /> 다시 다운로드</button>
+          </section>
+        )}
+
+        <ol className="steps" aria-label="처리 단계">
+          {["파일 선택", "열 확인", "분리 및 다운로드"].map((label, index) => (
+            <li className={step >= index + 1 ? "is-active" : ""} key={label}>
+              <span>{step > index + 1 ? <Check size={16} /> : index + 1}</span><strong>{label}</strong>
+            </li>
+          ))}
+        </ol>
+
+        {file && <button type="button" className="reset-button" onClick={reset}><RotateCcw size={16} /> 처음부터 다시</button>}
+      </main>
+
+      <footer>업로드한 파일은 외부 서버로 전송되거나 저장되지 않습니다.</footer>
+    </div>
+  );
+}
