@@ -1,14 +1,8 @@
 import type { NextConfig } from "next";
 
-const repositoryName = "excel-row-splitter";
-const isGitHubPages = process.env.GITHUB_ACTIONS === "true";
-const basePath = isGitHubPages ? `/${repositoryName}` : "";
-
 const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
-  basePath,
-  assetPrefix: basePath,
   images: {
     unoptimized: true,
   },
