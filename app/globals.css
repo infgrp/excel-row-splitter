@@ -76,6 +76,39 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .workspace { width: min(940px, calc(100% - 32px)); margin: 42px auto 0; }
 .card { background: rgba(255,255,255,.97); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px rgba(24,54,40,.08); }
+.mode-tabs {
+  margin-bottom: 16px;
+  padding: 5px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #e9efeb;
+}
+.mode-tabs > button {
+  min-height: 66px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 11px;
+  color: #52615a;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.mode-tabs > button:hover { color: var(--green-800); background: rgba(255,255,255,.6); }
+.mode-tabs > button.is-active {
+  color: var(--green-900);
+  border-color: #b8cfc0;
+  background: white;
+  box-shadow: 0 2px 8px rgba(24,54,40,.08);
+}
+.mode-tabs > button > span { display: grid; gap: 3px; text-align: left; }
+.mode-tabs strong { font-size: .95rem; }
+.mode-tabs small { color: #718078; font-size: .75rem; font-weight: 500; }
 .upload-card { padding: 16px; }
 .drop-zone {
   min-height: 278px;
@@ -132,6 +165,52 @@ button { -webkit-tap-highlight-color: transparent; }
 .inline-error { margin: 8px 0 0; color: var(--danger); font-size: .83rem; }
 .sheet-select { margin-top: 18px; display: grid; gap: 8px; color: #47534d; font-size: .83rem; font-weight: 800; }
 .sheet-select select { height: 42px; padding: 0 12px; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; background: white; }
+.sheet-select select:disabled { color: #7d8983; background: #eef1ef; cursor: not-allowed; }
+.sheet-select.always-visible { margin-top: 22px; }
+.mode-badge {
+  padding: 6px 10px;
+  color: var(--green-800);
+  border: 1px solid #a9c9b6;
+  border-radius: 5px;
+  background: var(--green-50);
+  font-size: .76rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.mapping-grid {
+  margin-top: 20px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.mapping-grid > span {
+  min-height: 72px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #d5dfd9;
+  border-radius: 6px;
+  background: #fbfcfb;
+}
+.mapping-grid strong {
+  width: 29px;
+  height: 29px;
+  display: grid;
+  place-items: center;
+  color: white;
+  border-radius: 4px;
+  background: var(--green-700);
+}
+.mapping-grid small { color: #53615a; line-height: 1.35; }
+.mapping-grid b { color: #8a9690; }
+.mapping-grid em {
+  color: var(--green-800);
+  font-size: .82rem;
+  font-style: normal;
+  font-weight: 800;
+}
 .rule-row { margin-top: 22px; padding-top: 16px; display: flex; align-items: baseline; gap: 18px; border-top: 1px solid #e0e6e2; }
 .rule-row span { flex: 0 0 auto; color: #47534d; font-size: .82rem; font-weight: 800; }
 .rule-row p { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.65; }
@@ -173,6 +252,7 @@ footer { padding: 34px 20px 28px; color: #73807a; text-align: center; font-size:
   .criteria-card { padding: 21px 18px 18px; }
   .section-heading { display: grid; }
   .toggle-label { justify-content: space-between; }
+  .mapping-grid { grid-template-columns: repeat(2, 1fr); }
   .rule-row { display: grid; gap: 5px; }
   .result-card { grid-template-columns: auto 1fr; }
   .download-again { grid-column: 1 / -1; justify-content: center; }
@@ -184,7 +264,10 @@ footer { padding: 34px 20px 28px; color: #73807a; text-align: center; font-size:
   .brand-mark { width: 46px; height: 46px; }
   .brand p { display: none; }
   .workspace { width: calc(100% - 20px); }
+  .mode-tabs > button { padding: 9px 7px; }
+  .mode-tabs small { display: none; }
   .upload-card { padding: 10px; }
+  .mapping-grid { grid-template-columns: 1fr; }
   .steps strong { font-size: .7rem; }
 }
 

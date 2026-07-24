@@ -1,6 +1,6 @@
 {
   "name": "excel-row-splitter",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "engines": {
     "node": ">=20.0.0"
@@ -8,8 +8,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint . --ignore-pattern .next --ignore-pattern out",
+    "test": "node --experimental-strip-types --test tests/excel-transform.test.mts tests/award-transform.test.mts",
+    "check": "npm run test && npm run lint && npm run build"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
@@ -28,6 +29,5 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },
-  "type": "module",
-  "displayName": "엑셀 행 분리기"
+  "type": "module"
 }

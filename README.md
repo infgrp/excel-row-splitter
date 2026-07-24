@@ -1,8 +1,30 @@
-# 엑셀 행 분리기 (excel-row-splitter)
+# 과학전람회 엑셀 도구
 
-엑셀 셀 안의 줄바꿈으로 나열된 자료를 **한 항목당 한 행**으로 분리해 주는 브라우저 도구.
+엑셀 파일을 서버에 전송하지 않고 브라우저 안에서 처리하는 웹앱이다.
 
-Next.js 16 App Router + React 19 + TypeScript + Tailwind CSS 4. 파일 처리는 모두 브라우저에서 이루어져 서버로 업로드되지 않는다.
+## 기능
+
+### 1. Alt+Enter 행 분리
+
+- 기본 분리 열: D, E
+- 사용자가 분리 기준 열을 추가하거나 삭제할 수 있음
+- 모든 시트 또는 선택 시트에 적용
+- 분리하지 않는 다른 셀의 값은 그대로 복제
+
+### 2. 상장용 명단 생성
+
+포상 대상자 명단에서 처리할 시트를 선택하면 다음 규칙으로 메일머지용
+엑셀 파일을 만든다.
+
+- A열 호수 → 출력 A열
+- E열 공적내용의 마지막 괄호 → 출력 B열
+- J열 상종 및 등급 → 출력 C열
+- F열 학생별 소속 → 반복되는 각 행의 D열
+- H열 학생별 학년 → `s1`, `s2`, `s3` …
+- I열 학생별 이름 → `n1`, `n2`, `n3` …
+- I열 학생 수만큼 결과 행 반복
+- F열 소속이 하나이면 모든 학생에게 반복
+- F열 소속이 여러 개이면 I열 학생 순서대로 대응
 
 ## 로컬 실행
 
@@ -11,26 +33,28 @@ npm install
 npm run dev
 ```
 
-`http://localhost:3000` 접속.
+브라우저에서 `http://localhost:3000`을 연다.
 
-## Vercel 배포
+## GitHub Pages 배포
 
-1. https://vercel.com/new 에서 **infgrp/excel-row-splitter** 리포지토리 import
-2. Framework Preset: **Next.js** 자동 감지
-3. Build/Output 설정은 그대로 두고 **Deploy**
+1. 이 폴더의 모든 파일을 `infgrp/excel-row-splitter` 저장소의 `main`
+   브랜치에 커밋하고 푸시한다.
+2. 저장소의 `Settings → Pages`로 이동한다.
+3. `Build and deployment → Source`를 `GitHub Actions`로 선택한다.
+4. `Actions` 탭에서 `Deploy to GitHub Pages` 작업이 성공할 때까지 기다린다.
+5. 배포 주소는 다음과 같다.
 
-Private 리포지토리라면 Vercel-GitHub 통합 권한이 이 리포에도 허용되어 있는지 확인.
+   `https://infgrp.github.io/excel-row-splitter/`
 
-## 스크립트
+저장소 이름을 바꾸면 `next.config.ts`의 `repositoryName`도 같은 이름으로
+수정해야 한다.
 
-- `npm run dev` — 개발 서버
-- `npm run build` — 프로덕션 빌드
-- `npm run start` — 빌드된 앱 실행
-- `npm run lint` — ESLint
+## 권장 명령
 
-## 구조
+```bash
+npm ci
+npm run check
+```
 
-- `app/page.tsx` — 메인 UI
-- `app/excel-transform.ts` — 엑셀 분리 로직 (ExcelJS)
-- `app/layout.tsx`, `app/globals.css` — 레이아웃·전역 스타일
-- `tests/excel-transform.test.mts` — `node --test tests/excel-transform.test.mts`
+`npm run check`는 변환 로직 테스트, 코드 검사, 정적 사이트 빌드를 차례로
+수행한다.

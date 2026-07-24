@@ -3,10 +3,12 @@
 import type { Worksheet } from "exceljs";
 import {
   AlertCircle,
+  Award,
   Check,
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  ListTree,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -24,6 +26,10 @@ import {
   useState,
 } from "react";
 import {
+  awardOutputFileName,
+  createAwardOutput,
+} from "./award-transform";
+import {
   columnToNumber,
   normalizeColumn,
   outputFileName,
@@ -35,14 +41,27 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const EXCEL_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
+type Mode = "split" | "award";
 type Stage = "idle" | "reading" | "ready" | "processing" | "done" | "error";
 
-type ProcessResult = {
+type SplitResult = {
+  kind: "split";
   sheets: SheetResult[];
   splitRows: number;
   addedRows: number;
   outputName: string;
 };
+
+type AwardResult = {
+  kind: "award";
+  sourceSheet: string;
+  sourceRows: number;
+  recipientRows: number;
+  maxMembers: number;
+  outputName: string;
+};
+
+type ProcessResult = SplitResult | AwardResult;
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -58,7 +77,12 @@ function triggerDownload(url: string, name: string) {
   anchor.remove();
 }
 
+function safeWorksheetName(name: string) {
+  return `상장명단_${name}`.replace(/[\\/:*?"<>|]/g, "_").slice(0, 31);
+}
+
 export default function Home() {
+  const [mode, setMode] = useState<Mode>("split");
   const [file, setFile] = useState<File | null>(null);
   const [columns, setColumns] = useState(["D", "E"]);
   const [applyAllSheets, setApplyAllSheets] = useState(true);
@@ -85,6 +109,22 @@ export default function Home() {
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     setDownloadUrl("");
     setResult(null);
+  };
+
+  const resetFile = () => {
+    clearOutput();
+    bufferRef.current = null;
+    setFile(null);
+    setSheetNames([]);
+    setSelectedSheet("");
+    setError("");
+    setStage("idle");
+  };
+
+  const changeMode = (nextMode: Mode) => {
+    if (nextMode === mode) return;
+    resetFile();
+    setMode(nextMode);
   };
 
   const inspectFile = async (nextFile: File) => {
@@ -173,40 +213,113 @@ export default function Home() {
     if (file) setStage("ready");
   };
 
-  const runProcess = async () => {
-    if (!file || !bufferRef.current || columns.length === 0 || stage === "processing") return;
-    clearOutput();
-    setError("");
-    setStage("processing");
+  const runSplitProcess = async () => {
+    if (!file || !bufferRef.current || columns.length === 0) return;
+    const ExcelJS = await import("exceljs");
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(bufferRef.current.slice(0));
+    const columnNumbers = columns.map(columnToNumber);
+    const targetSheets = applyAllSheets
+      ? workbook.worksheets
+      : [workbook.getWorksheet(selectedSheet)].filter(
+          (sheet): sheet is Worksheet => Boolean(sheet),
+        );
+    if (targetSheets.length === 0) throw new Error("처리할 시트를 찾지 못했습니다.");
 
-    try {
-      const ExcelJS = await import("exceljs");
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.load(bufferRef.current.slice(0));
-      const columnNumbers = columns.map(columnToNumber);
-      const targetSheets = applyAllSheets
-        ? workbook.worksheets
-        : [workbook.getWorksheet(selectedSheet)].filter(
-            (sheet): sheet is Worksheet => Boolean(sheet),
-          );
-      if (targetSheets.length === 0) throw new Error("처리할 시트를 찾지 못했습니다.");
-
-      const sheets = targetSheets.map((sheet) => processSheet(sheet, columnNumbers));
-      workbook.calcProperties.fullCalcOnLoad = true;
-      const output = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([output as BlobPart], { type: EXCEL_MIME });
-      const url = URL.createObjectURL(blob);
-      const name = outputFileName(file.name);
-      const summary: ProcessResult = {
+    const sheets = targetSheets.map((sheet) => processSheet(sheet, columnNumbers));
+    workbook.calcProperties.fullCalcOnLoad = true;
+    const output = await workbook.xlsx.writeBuffer();
+    const name = outputFileName(file.name);
+    return {
+      blob: new Blob([output as BlobPart], { type: EXCEL_MIME }),
+      result: {
+        kind: "split" as const,
         sheets,
         splitRows: sheets.reduce((sum, sheet) => sum + sheet.splitRows, 0),
         addedRows: sheets.reduce((sum, sheet) => sum + sheet.addedRows, 0),
         outputName: name,
-      };
+      },
+    };
+  };
+
+  const runAwardProcess = async () => {
+    if (!file || !bufferRef.current || !selectedSheet) return;
+    const ExcelJS = await import("exceljs");
+    const sourceWorkbook = new ExcelJS.Workbook();
+    await sourceWorkbook.xlsx.load(bufferRef.current.slice(0));
+    const sourceSheet = sourceWorkbook.getWorksheet(selectedSheet);
+    if (!sourceSheet) throw new Error("선택한 시트를 찾지 못했습니다.");
+    const outputData = createAwardOutput(sourceSheet);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "과학전람회 엑셀 도구";
+    const sheet = workbook.addWorksheet(safeWorksheetName(selectedSheet));
+    sheet.addRow(outputData.headers);
+    outputData.rows.forEach((row) => sheet.addRow(row));
+    sheet.views = [{ state: "frozen", ySplit: 1 }];
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: outputData.headers.length },
+    };
+    sheet.columns = outputData.headers.map((header, index) => ({
+      key: header,
+      width: index === 3 ? 28 : index < 3 ? 16 : 14,
+    }));
+
+    sheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      row.height = rowNumber === 1 ? 24 : 21;
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.alignment = {
+          horizontal: "center",
+          vertical: "middle",
+          wrapText: indexOfLineBreak(cell.value) >= 0,
+        };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFB7C0BB" } },
+          left: { style: "thin", color: { argb: "FFB7C0BB" } },
+          bottom: { style: "thin", color: { argb: "FFB7C0BB" } },
+          right: { style: "thin", color: { argb: "FFB7C0BB" } },
+        };
+        if (rowNumber === 1) {
+          cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FF0D7048" },
+          };
+        }
+      });
+    });
+
+    const output = await workbook.xlsx.writeBuffer();
+    const name = awardOutputFileName(file.name, selectedSheet);
+    return {
+      blob: new Blob([output as BlobPart], { type: EXCEL_MIME }),
+      result: {
+        kind: "award" as const,
+        sourceSheet: selectedSheet,
+        sourceRows: outputData.sourceRows,
+        recipientRows: outputData.recipientRows,
+        maxMembers: outputData.maxMembers,
+        outputName: name,
+      },
+    };
+  };
+
+  const runProcess = async () => {
+    if (!file || !bufferRef.current || stage === "processing") return;
+    clearOutput();
+    setError("");
+    setStage("processing");
+    try {
+      const processed =
+        mode === "split" ? await runSplitProcess() : await runAwardProcess();
+      if (!processed) throw new Error("처리할 파일이나 시트를 확인해 주세요.");
+      const url = URL.createObjectURL(processed.blob);
       setDownloadUrl(url);
-      setResult(summary);
+      setResult(processed.result);
       setStage("done");
-      triggerDownload(url, name);
+      triggerDownload(url, processed.result.outputName);
     } catch (caught) {
       setStage("error");
       setError(
@@ -217,27 +330,25 @@ export default function Home() {
     }
   };
 
-  const reset = () => {
-    clearOutput();
-    bufferRef.current = null;
-    setFile(null);
-    setSheetNames([]);
-    setSelectedSheet("");
-    setError("");
-    setStage("idle");
-  };
-
   const primaryLabel =
     stage === "reading"
       ? "파일 확인 중"
       : stage === "processing"
-        ? "행을 분리하는 중"
+        ? mode === "split"
+          ? "행을 분리하는 중"
+          : "상장 명단을 만드는 중"
         : !file
           ? "파일을 먼저 선택하세요"
           : stage === "done"
             ? "현재 설정으로 다시 처리"
-            : "행 분리 및 다운로드";
+            : mode === "split"
+              ? "행 분리 및 다운로드"
+              : "상장 명단 생성 및 다운로드";
   const step = file ? (stage === "processing" || stage === "done" ? 3 : 2) : 1;
+  const stepLabels =
+    mode === "split"
+      ? ["파일 선택", "열 확인", "분리 및 다운로드"]
+      : ["파일 선택", "시트 선택", "명단 생성 및 다운로드"];
 
   return (
     <div className="app-shell">
@@ -248,8 +359,8 @@ export default function Home() {
               <FileSpreadsheet size={34} strokeWidth={1.8} />
             </span>
             <div>
-              <h1>엑셀 행 분리기</h1>
-              <p>줄바꿈 자료를 한 항목당 한 행으로 정리합니다.</p>
+              <h1>과학전람회 엑셀 도구</h1>
+              <p>줄바꿈 행 분리와 상장용 명단 생성을 한곳에서 처리합니다.</p>
             </div>
           </div>
           <div className="privacy-note">
@@ -260,6 +371,29 @@ export default function Home() {
       </header>
 
       <main className="workspace">
+        <div className="mode-tabs" role="tablist" aria-label="작업 선택">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "split"}
+            className={mode === "split" ? "is-active" : ""}
+            onClick={() => changeMode("split")}
+          >
+            <ListTree size={20} />
+            <span><strong>행 분리</strong><small>Alt+Enter 자료 나누기</small></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "award"}
+            className={mode === "award" ? "is-active" : ""}
+            onClick={() => changeMode("award")}
+          >
+            <Award size={20} />
+            <span><strong>상장 명단 만들기</strong><small>메일머지용 명단 생성</small></span>
+          </button>
+        </div>
+
         <section className="card upload-card" aria-labelledby="upload-title">
           <input
             ref={inputRef}
@@ -281,7 +415,9 @@ export default function Home() {
             }}
             onDragOver={(event) => event.preventDefault()}
             onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setIsDragging(false);
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setIsDragging(false);
+              }
             }}
             onDrop={handleDrop}
           >
@@ -297,104 +433,154 @@ export default function Home() {
             ) : (
               <>
                 <h2 id="upload-title">파일을 여기에 끌어 놓으세요</h2>
-                <p>또는 클릭하여 .xlsx 파일 선택</p>
+                <p>
+                  {mode === "split"
+                    ? "또는 클릭하여 행을 분리할 .xlsx 파일 선택"
+                    : "또는 클릭하여 포상 대상자 명단 .xlsx 파일 선택"}
+                </p>
                 <span className="size-badge">최대 50MB</span>
               </>
             )}
           </div>
         </section>
 
-        <section className="card criteria-card" aria-labelledby="criteria-title">
-          <div className="section-heading">
-            <div>
-              <h2 id="criteria-title">분리 기준</h2>
-              <p>선택한 열의 Alt+Enter 줄바꿈을 같은 순서로 나눕니다.</p>
+        {mode === "split" ? (
+          <section className="card criteria-card" aria-labelledby="criteria-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="criteria-title">분리 기준</h2>
+                <p>선택한 열의 Alt+Enter 줄바꿈을 같은 순서로 나눕니다.</p>
+              </div>
+              <label className="toggle-label">
+                <span>모든 시트 적용</span>
+                <button
+                  type="button"
+                  className={`toggle ${applyAllSheets ? "is-on" : ""}`}
+                  role="switch"
+                  aria-checked={applyAllSheets}
+                  onClick={() => {
+                    clearOutput();
+                    setApplyAllSheets((current) => !current);
+                    if (file) setStage("ready");
+                  }}
+                >
+                  <span />
+                </button>
+              </label>
             </div>
-            <label className="toggle-label">
-              <span>모든 시트 적용</span>
-              <button
-                type="button"
-                className={`toggle ${applyAllSheets ? "is-on" : ""}`}
-                role="switch"
-                aria-checked={applyAllSheets}
-                onClick={() => {
+
+            <div className="column-section">
+              <span className="field-label">대상 열</span>
+              <div className="column-controls">
+                {columns.map((column) => (
+                  <span className="column-chip" key={column}>
+                    <strong>{column}</strong>
+                    <button
+                      type="button"
+                      aria-label={`${column}열 삭제`}
+                      title={columns.length === 1 ? "기준 열은 하나 이상 필요합니다" : `${column}열 삭제`}
+                      disabled={columns.length === 1}
+                      onClick={() => removeColumn(column)}
+                    >
+                      <X size={18} />
+                    </button>
+                  </span>
+                ))}
+
+                {showColumnInput ? (
+                  <form className="column-form" onSubmit={addColumn}>
+                    <input
+                      autoFocus
+                      value={newColumn}
+                      maxLength={3}
+                      aria-label="추가할 열 문자"
+                      placeholder="예: F"
+                      onChange={(event) => {
+                        setNewColumn(event.target.value.toUpperCase());
+                        setColumnError("");
+                      }}
+                    />
+                    <button type="submit" aria-label="열 추가 확인"><Check size={18} /></button>
+                    <button
+                      type="button"
+                      aria-label="열 추가 취소"
+                      onClick={() => {
+                        setShowColumnInput(false);
+                        setNewColumn("");
+                        setColumnError("");
+                      }}
+                    ><X size={18} /></button>
+                  </form>
+                ) : (
+                  <button type="button" className="add-column" onClick={() => setShowColumnInput(true)}>
+                    <Plus size={19} /> 열 추가
+                  </button>
+                )}
+              </div>
+              {columnError && <p className="inline-error">{columnError}</p>}
+            </div>
+
+            {!applyAllSheets && file && (
+              <label className="sheet-select">
+                <span>처리할 시트</span>
+                <select value={selectedSheet} onChange={(event) => setSelectedSheet(event.target.value)}>
+                  {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </label>
+            )}
+
+            <div className="rule-row">
+              <span>적용 규칙</span>
+              <p>한 줄 값은 필요한 만큼 반복 · 항목이 부족한 칸은 비움 · 다른 셀은 그대로 복제</p>
+            </div>
+          </section>
+        ) : (
+          <section className="card criteria-card award-card" aria-labelledby="award-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="award-title">상장 명단 생성 기준</h2>
+                <p>포상 대상자 명단에서 메일머지용 구조를 자동으로 만듭니다.</p>
+              </div>
+              <span className="mode-badge">예시 형식 적용</span>
+            </div>
+
+            <label className="sheet-select always-visible">
+              <span>처리할 시트</span>
+              <select
+                value={selectedSheet}
+                disabled={!file}
+                onChange={(event) => {
                   clearOutput();
-                  setApplyAllSheets((current) => !current);
+                  setSelectedSheet(event.target.value);
                   if (file) setStage("ready");
                 }}
               >
-                <span />
-              </button>
-            </label>
-          </div>
-
-          <div className="column-section">
-            <span className="field-label">대상 열</span>
-            <div className="column-controls">
-              {columns.map((column) => (
-                <span className="column-chip" key={column}>
-                  <strong>{column}</strong>
-                  <button
-                    type="button"
-                    aria-label={`${column}열 삭제`}
-                    title={columns.length === 1 ? "기준 열은 하나 이상 필요합니다" : `${column}열 삭제`}
-                    disabled={columns.length === 1}
-                    onClick={() => removeColumn(column)}
-                  >
-                    <X size={18} />
-                  </button>
-                </span>
-              ))}
-
-              {showColumnInput ? (
-                <form className="column-form" onSubmit={addColumn}>
-                  <input
-                    autoFocus
-                    value={newColumn}
-                    maxLength={3}
-                    aria-label="추가할 열 문자"
-                    placeholder="예: F"
-                    onChange={(event) => {
-                      setNewColumn(event.target.value.toUpperCase());
-                      setColumnError("");
-                    }}
-                  />
-                  <button type="submit" aria-label="열 추가 확인"><Check size={18} /></button>
-                  <button
-                    type="button"
-                    aria-label="열 추가 취소"
-                    onClick={() => {
-                      setShowColumnInput(false);
-                      setNewColumn("");
-                      setColumnError("");
-                    }}
-                  ><X size={18} /></button>
-                </form>
-              ) : (
-                <button type="button" className="add-column" onClick={() => setShowColumnInput(true)}>
-                  <Plus size={19} /> 열 추가
-                </button>
-              )}
-            </div>
-            {columnError && <p className="inline-error">{columnError}</p>}
-          </div>
-
-          {!applyAllSheets && file && (
-            <label className="sheet-select">
-              <span>처리할 시트</span>
-              <select value={selectedSheet} onChange={(event) => setSelectedSheet(event.target.value)}>
+                {!file && <option>파일을 먼저 선택하세요</option>}
                 {sheetNames.map((name) => <option key={name} value={name}>{name}</option>)}
               </select>
             </label>
-          )}
 
-          <div className="rule-row">
-            <span>적용 규칙</span>
-            <p>한 줄 값은 필요한 만큼 반복 · 항목이 부족한 칸은 비움 · 다른 셀은 그대로 복제</p>
+            <div className="mapping-grid" aria-label="열 변환 규칙">
+              <span><strong>A</strong><small>호수</small><b>→</b><em>1</em></span>
+              <span><strong>E</strong><small>마지막 괄호의 부문</small><b>→</b><em>2</em></span>
+              <span><strong>J</strong><small>상종 및 등급</small><b>→</b><em>3</em></span>
+              <span><strong>F</strong><small>학생별 소속 학교</small><b>→</b><em>sc1</em></span>
+              <span><strong>H</strong><small>학생별 학년</small><b>→</b><em>s1…</em></span>
+              <span><strong>I</strong><small>학생별 이름</small><b>→</b><em>n1…</em></span>
+            </div>
+
+            <div className="rule-row">
+              <span>반복 규칙</span>
+              <p>한 행의 학생 수만큼 결과 행을 생성합니다. F열 소속이 여러 개이면 I열 학생과 같은 순서로 D열에 하나씩 넣고, 소속이 하나이면 모든 학생에게 반복합니다. 부문명은 예시처럼 ‘부문’과 공백을 제거합니다.</p>
+            </div>
+          </section>
+        )}
+
+        {error && (
+          <div className="message error-message" role="alert">
+            <AlertCircle size={20} /><span>{error}</span>
           </div>
-        </section>
-
-        {error && <div className="message error-message" role="alert"><AlertCircle size={20} /><span>{error}</span></div>}
+        )}
 
         <button
           type="button"
@@ -402,7 +588,11 @@ export default function Home() {
           disabled={!file || stage === "reading" || stage === "processing"}
           onClick={() => void runProcess()}
         >
-          {stage === "reading" || stage === "processing" ? <LoaderCircle className="spinner" size={22} /> : stage === "done" ? <RotateCcw size={21} /> : <Download size={21} />}
+          {stage === "reading" || stage === "processing"
+            ? <LoaderCircle className="spinner" size={22} />
+            : stage === "done"
+              ? <RotateCcw size={21} />
+              : <Download size={21} />}
           {primaryLabel}
         </button>
 
@@ -410,28 +600,55 @@ export default function Home() {
           <section className="card result-card" aria-live="polite">
             <div className="result-icon"><CheckCircle2 size={30} /></div>
             <div className="result-copy">
-              <h2>행 분리가 완료되었습니다</h2>
-              <p>{result.sheets.length}개 시트에서 {result.splitRows}개 행을 나누고, 새 행 {result.addedRows}개를 만들었습니다.</p>
-              <div className="sheet-summary">
-                {result.sheets.map((sheet) => <span key={sheet.name}>{sheet.name} <strong>+{sheet.addedRows}</strong></span>)}
-              </div>
+              <h2>
+                {result.kind === "split"
+                  ? "행 분리가 완료되었습니다"
+                  : "상장 명단이 완성되었습니다"}
+              </h2>
+              {result.kind === "split" ? (
+                <>
+                  <p>{result.sheets.length}개 시트에서 {result.splitRows}개 행을 나누고, 새 행 {result.addedRows}개를 만들었습니다.</p>
+                  <div className="sheet-summary">
+                    {result.sheets.map((sheet) => <span key={sheet.name}>{sheet.name} <strong>+{sheet.addedRows}</strong></span>)}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>‘{result.sourceSheet}’ 시트의 작품 {result.sourceRows}건을 학생 {result.recipientRows}명용 행으로 만들었습니다.</p>
+                  <div className="sheet-summary">
+                    <span>최대 학생 수 <strong>{result.maxMembers}명</strong></span>
+                    <span>생성 행 <strong>{result.recipientRows}개</strong></span>
+                  </div>
+                </>
+              )}
             </div>
-            <button type="button" className="download-again" onClick={() => triggerDownload(downloadUrl, result.outputName)}><Download size={18} /> 다시 다운로드</button>
+            <button type="button" className="download-again" onClick={() => triggerDownload(downloadUrl, result.outputName)}>
+              <Download size={18} /> 다시 다운로드
+            </button>
           </section>
         )}
 
         <ol className="steps" aria-label="처리 단계">
-          {["파일 선택", "열 확인", "분리 및 다운로드"].map((label, index) => (
+          {stepLabels.map((label, index) => (
             <li className={step >= index + 1 ? "is-active" : ""} key={label}>
-              <span>{step > index + 1 ? <Check size={16} /> : index + 1}</span><strong>{label}</strong>
+              <span>{step > index + 1 ? <Check size={16} /> : index + 1}</span>
+              <strong>{label}</strong>
             </li>
           ))}
         </ol>
 
-        {file && <button type="button" className="reset-button" onClick={reset}><RotateCcw size={16} /> 처음부터 다시</button>}
+        {file && (
+          <button type="button" className="reset-button" onClick={resetFile}>
+            <RotateCcw size={16} /> 처음부터 다시
+          </button>
+        )}
       </main>
 
       <footer>업로드한 파일은 외부 서버로 전송되거나 저장되지 않습니다.</footer>
     </div>
   );
+}
+
+function indexOfLineBreak(value: unknown) {
+  return typeof value === "string" ? value.indexOf("\n") : -1;
 }
