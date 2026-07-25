@@ -35,10 +35,19 @@ npm run dev
 
 브라우저에서 `http://localhost:3000`을 연다.
 
-## Vercel 배포
+## GitHub Pages 배포
 
-`main` 브랜치에 push하면 Vercel이 자동으로 재배포한다. 배포 주소는 Vercel
-대시보드의 프로젝트 페이지에서 확인.
+1. 이 폴더의 모든 파일을 `infgrp/excel-row-splitter` 저장소의 `main`
+   브랜치에 커밋하고 푸시한다.
+2. 저장소의 `Settings → Pages`로 이동한다.
+3. `Build and deployment → Source`를 `GitHub Actions`로 선택한다.
+4. `Actions` 탭에서 `Deploy to GitHub Pages` 작업이 성공할 때까지 기다린다.
+5. 배포 주소는 다음과 같다.
+
+   `https://infgrp.github.io/excel-row-splitter/`
+
+저장소 이름을 바꾸면 `next.config.ts`의 `repositoryName`도 같은 이름으로
+수정해야 한다.
 
 ## 권장 명령
 
