@@ -3,14 +3,17 @@
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
+    "start": "next start",
+    "test": "npm run test:unit",
+    "test:unit": "node --experimental-strip-types --test tests/excel-transform.test.mts tests/award-transform.test.mts tests/school-directory.test.mts tests/label-print.test.mts",
+    "update:schools": "node scripts/update-school-data.mjs",
     "lint": "eslint . --ignore-pattern .next --ignore-pattern out",
-    "test": "node --experimental-strip-types --test tests/excel-transform.test.mts tests/award-transform.test.mts",
-    "check": "npm run test && npm run lint && npm run build"
+    "check": "npm run test:unit && npm run lint && npm run build"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
@@ -29,5 +32,6 @@
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"
   },
-  "type": "module"
+  "type": "module",
+  "displayName": "엑셀 행 분리기"
 }

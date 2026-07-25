@@ -4,6 +4,7 @@ import type { Worksheet } from "exceljs";
 import {
   AlertCircle,
   Award,
+  Building2,
   Check,
   CheckCircle2,
   Download,
@@ -13,6 +14,7 @@ import {
   Plus,
   RotateCcw,
   ShieldCheck,
+  UploadCloud,
   Upload,
   X,
 } from "lucide-react";
@@ -36,12 +38,21 @@ import {
   processSheet,
   type SheetResult,
 } from "./excel-transform";
+import {
+  createSchoolAddressOutput,
+  parseSchoolDirectoryWorkbook,
+  SCHOOL_ADDRESS_HEADERS,
+  schoolAddressExcelRow,
+  schoolAddressOutputFileName,
+  type SchoolDirectoryData,
+} from "./school-directory";
+import { buildLabelPrintHtml, LABEL_SPEC } from "./label-print";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const EXCEL_MIME =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-type Mode = "split" | "award";
+type Mode = "split" | "award" | "address";
 type Stage = "idle" | "reading" | "ready" | "processing" | "done" | "error";
 
 type SplitResult = {
@@ -61,7 +72,16 @@ type AwardResult = {
   outputName: string;
 };
 
-type ProcessResult = SplitResult | AwardResult;
+type AddressResult = {
+  kind: "address";
+  schoolCount: number;
+  matchedCount: number;
+  unmatchedNames: string[];
+  directorySource: string;
+  outputName: string;
+};
+
+type ProcessResult = SplitResult | AwardResult | AddressResult;
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -96,8 +116,47 @@ export default function Home() {
   const [error, setError] = useState("");
   const [result, setResult] = useState<ProcessResult | null>(null);
   const [downloadUrl, setDownloadUrl] = useState("");
+  const [directory, setDirectory] = useState<SchoolDirectoryData | null>(null);
+  const [directorySource, setDirectorySource] = useState("기본 학교 데이터 불러오는 중");
+  const [directoryLoading, setDirectoryLoading] = useState(true);
+  const [recipientName, setRecipientName] = useState("");
+  const [deliveryNote, setDeliveryNote] = useState("");
+  const [labelRows, setLabelRows] = useState<
+    import("./school-directory").SchoolAddressRow[]
+  >([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const directoryInputRef = useRef<HTMLInputElement>(null);
   const bufferRef = useRef<ArrayBuffer | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void fetch("./data/schools.json")
+      .then((response) => {
+        if (!response.ok) throw new Error("학교 데이터 응답 오류");
+        return response.json() as Promise<SchoolDirectoryData>;
+      })
+      .then((data) => {
+        if (!active) return;
+        if (!Array.isArray(data.schools) || data.schools.length === 0) {
+          throw new Error("학교 데이터 없음");
+        }
+        setDirectory(data);
+        setDirectorySource(
+          `기본 데이터 · ${data.count.toLocaleString()}개교 · ${data.generatedAt}`,
+        );
+      })
+      .catch(() => {
+        if (!active) return;
+        setDirectory(null);
+        setDirectorySource("기본 학교 데이터를 불러오지 못했습니다");
+      })
+      .finally(() => {
+        if (active) setDirectoryLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -109,6 +168,7 @@ export default function Home() {
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     setDownloadUrl("");
     setResult(null);
+    setLabelRows([]);
   };
 
   const resetFile = () => {
@@ -167,6 +227,40 @@ export default function Home() {
     const nextFile = event.target.files?.[0];
     if (nextFile) void inspectFile(nextFile);
     event.target.value = "";
+  };
+
+  const handleDirectoryFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const nextFile = event.target.files?.[0];
+    event.target.value = "";
+    if (!nextFile) return;
+    setError("");
+    if (!/\.xlsx$/i.test(nextFile.name)) {
+      setError("학교 기본현황은 .xlsx 파일만 사용할 수 있습니다.");
+      return;
+    }
+    try {
+      const ExcelJS = await import("exceljs");
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await nextFile.arrayBuffer());
+      const nextDirectory = parseSchoolDirectoryWorkbook(
+        workbook,
+        nextFile.name,
+      );
+      setDirectory(nextDirectory);
+      setDirectorySource(
+        `${nextFile.name} · ${nextDirectory.count.toLocaleString()}개교`,
+      );
+      clearOutput();
+      if (file) setStage("ready");
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? `학교 기본현황을 적용하지 못했습니다: ${caught.message}`
+          : "학교 기본현황을 적용하지 못했습니다.",
+      );
+    }
   };
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -306,6 +400,81 @@ export default function Home() {
     };
   };
 
+  const runAddressProcess = async () => {
+    if (!file || !bufferRef.current || !directory) return;
+    const ExcelJS = await import("exceljs");
+    const sourceWorkbook = new ExcelJS.Workbook();
+    await sourceWorkbook.xlsx.load(bufferRef.current.slice(0));
+    const outputData = createSchoolAddressOutput(sourceWorkbook, directory);
+    setLabelRows(outputData.rows);
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "과학전람회 엑셀 도구";
+    const sheet = workbook.addWorksheet("수상학교 주소명단");
+    sheet.addRow([...SCHOOL_ADDRESS_HEADERS]);
+    outputData.rows.forEach((row) => {
+      sheet.addRow(schoolAddressExcelRow(row, recipientName, deliveryNote));
+    });
+    sheet.views = [{ state: "frozen", ySplit: 1 }];
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: 5 },
+    };
+    sheet.columns = [
+      { key: "schoolName", width: 32 },
+      { key: "postalCode", width: 13 },
+      { key: "address", width: 72 },
+      { key: "recipientName", width: 22 },
+      { key: "deliveryNote", width: 40 },
+    ];
+    sheet.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+      row.height = rowNumber === 1 ? 25 : 22;
+      row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+        cell.alignment = {
+          horizontal:
+            columnNumber === 3 || columnNumber === 5 ? "left" : "center",
+          vertical: "middle",
+          wrapText: columnNumber === 5,
+        };
+        cell.border = {
+          top: { style: "thin", color: { argb: "FFC9D2CD" } },
+          left: { style: "thin", color: { argb: "FFC9D2CD" } },
+          bottom: { style: "thin", color: { argb: "FFC9D2CD" } },
+          right: { style: "thin", color: { argb: "FFC9D2CD" } },
+        };
+        if (columnNumber === 2 && rowNumber > 1) cell.numFmt = "@";
+        if (rowNumber === 1) {
+          cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FF0D7048" },
+          };
+        } else if (!outputData.rows[rowNumber - 2]?.matched) {
+          cell.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFFFF2CC" },
+          };
+        }
+      });
+    });
+
+    const output = await workbook.xlsx.writeBuffer();
+    const name = schoolAddressOutputFileName(file.name);
+    return {
+      blob: new Blob([output as BlobPart], { type: EXCEL_MIME }),
+      result: {
+        kind: "address" as const,
+        schoolCount: outputData.rows.length,
+        matchedCount: outputData.matchedCount,
+        unmatchedNames: outputData.unmatchedNames,
+        directorySource,
+        outputName: name,
+      },
+    };
+  };
+
   const runProcess = async () => {
     if (!file || !bufferRef.current || stage === "processing") return;
     clearOutput();
@@ -313,7 +482,11 @@ export default function Home() {
     setStage("processing");
     try {
       const processed =
-        mode === "split" ? await runSplitProcess() : await runAwardProcess();
+        mode === "split"
+          ? await runSplitProcess()
+          : mode === "award"
+            ? await runAwardProcess()
+            : await runAddressProcess();
       if (!processed) throw new Error("처리할 파일이나 시트를 확인해 주세요.");
       const url = URL.createObjectURL(processed.blob);
       setDownloadUrl(url);
@@ -330,25 +503,46 @@ export default function Home() {
     }
   };
 
+  const printAddressLabels = () => {
+    if (labelRows.length === 0) return;
+    const html = buildLabelPrintHtml(labelRows, recipientName, deliveryNote);
+    const blobUrl = URL.createObjectURL(
+      new Blob([html], { type: "text/html;charset=utf-8" }),
+    );
+    const printWindow = window.open(blobUrl, "_blank", "noopener,noreferrer");
+    if (!printWindow) {
+      URL.revokeObjectURL(blobUrl);
+      setError("인쇄 창을 열지 못했습니다. 브라우저의 팝업 차단을 해제해 주세요.");
+      return;
+    }
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  };
+
   const primaryLabel =
     stage === "reading"
       ? "파일 확인 중"
       : stage === "processing"
         ? mode === "split"
           ? "행을 분리하는 중"
-          : "상장 명단을 만드는 중"
+          : mode === "award"
+            ? "상장 명단을 만드는 중"
+            : "학교 주소를 찾는 중"
         : !file
           ? "파일을 먼저 선택하세요"
           : stage === "done"
             ? "현재 설정으로 다시 처리"
             : mode === "split"
               ? "행 분리 및 다운로드"
-              : "상장 명단 생성 및 다운로드";
+              : mode === "award"
+                ? "상장 명단 생성 및 다운로드"
+                : "학교 주소 명단 생성 및 다운로드";
   const step = file ? (stage === "processing" || stage === "done" ? 3 : 2) : 1;
   const stepLabels =
     mode === "split"
       ? ["파일 선택", "열 확인", "분리 및 다운로드"]
-      : ["파일 선택", "시트 선택", "명단 생성 및 다운로드"];
+      : mode === "award"
+        ? ["파일 선택", "시트 선택", "명단 생성 및 다운로드"]
+        : ["상장 명단 선택", "학교 데이터 확인", "주소 명단 다운로드"];
 
   return (
     <div className="app-shell">
@@ -360,7 +554,7 @@ export default function Home() {
             </span>
             <div>
               <h1>과학전람회 엑셀 도구</h1>
-              <p>줄바꿈 행 분리와 상장용 명단 생성을 한곳에서 처리합니다.</p>
+              <p>행 분리, 상장 명단, 수상학교 주소 추출을 한곳에서 처리합니다.</p>
             </div>
           </div>
           <div className="privacy-note">
@@ -391,6 +585,16 @@ export default function Home() {
           >
             <Award size={20} />
             <span><strong>상장 명단 만들기</strong><small>메일머지용 명단 생성</small></span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "address"}
+            className={mode === "address" ? "is-active" : ""}
+            onClick={() => changeMode("address")}
+          >
+            <Building2 size={20} />
+            <span><strong>학교 주소 추출</strong><small>우편번호·주소 명단</small></span>
           </button>
         </div>
 
@@ -436,7 +640,9 @@ export default function Home() {
                 <p>
                   {mode === "split"
                     ? "또는 클릭하여 행을 분리할 .xlsx 파일 선택"
-                    : "또는 클릭하여 포상 대상자 명단 .xlsx 파일 선택"}
+                    : mode === "award"
+                      ? "또는 클릭하여 포상 대상자 명단 .xlsx 파일 선택"
+                      : "또는 클릭하여 생성된 상장 명단 .xlsx 파일 선택"}
                 </p>
                 <span className="size-badge">최대 50MB</span>
               </>
@@ -534,7 +740,7 @@ export default function Home() {
               <p>한 줄 값은 필요한 만큼 반복 · 항목이 부족한 칸은 비움 · 다른 셀은 그대로 복제</p>
             </div>
           </section>
-        ) : (
+        ) : mode === "award" ? (
           <section className="card criteria-card award-card" aria-labelledby="award-title">
             <div className="section-heading">
               <div>
@@ -574,6 +780,91 @@ export default function Home() {
               <p>한 행의 학생 수만큼 결과 행을 생성합니다. F열 소속이 여러 개이면 I열 학생과 같은 순서로 D열에 하나씩 넣고, 소속이 하나이면 모든 학생에게 반복합니다. 부문명은 예시처럼 ‘부문’과 공백을 제거합니다.</p>
             </div>
           </section>
+        ) : (
+          <section className="card criteria-card address-card" aria-labelledby="address-title">
+            <div className="section-heading">
+              <div>
+                <h2 id="address-title">수상학교 주소 명단</h2>
+                <p>상장 명단의 sc1 열에서 학교를 모아 우편번호와 주소를 찾습니다.</p>
+              </div>
+              <span className="mode-badge">중복 학교 자동 제거</span>
+            </div>
+
+            <div className="directory-panel">
+              <div className="directory-copy">
+                <span className="directory-icon" aria-hidden="true">
+                  <Building2 size={22} />
+                </span>
+                <div>
+                  <strong>학교 기본현황</strong>
+                  <p>{directorySource}</p>
+                </div>
+              </div>
+              <input
+                ref={directoryInputRef}
+                className="sr-only"
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(event) => void handleDirectoryFileChange(event)}
+              />
+              <button
+                type="button"
+                className="directory-update"
+                onClick={() => directoryInputRef.current?.click()}
+              >
+                <UploadCloud size={18} />
+                새 학교현황 적용
+              </button>
+            </div>
+
+            <div className="address-flow" aria-label="학교 주소 추출 규칙">
+              <span><strong>1</strong><small>상장 명단 sc1</small></span>
+              <b>→</b>
+              <span><strong>2</strong><small>학교명 중복 제거</small></span>
+              <b>→</b>
+              <span><strong>3</strong><small>주소·수신자·주의사항</small></span>
+            </div>
+
+            <div className="address-extra-fields">
+              <label>
+                <span>수신자 이름</span>
+                <input
+                  type="text"
+                  value={recipientName}
+                  placeholder="예: 과학담당 선생님"
+                  onChange={(event) => {
+                    clearOutput();
+                    setRecipientName(event.target.value);
+                    if (file) setStage("ready");
+                  }}
+                />
+                <small>모든 학교 행의 주소 다음 열에 동일하게 입력됩니다.</small>
+              </label>
+              <label>
+                <span>주의사항</span>
+                <textarea
+                  value={deliveryNote}
+                  rows={3}
+                  placeholder="예: 상장 재중 · 접지 금지"
+                  onChange={(event) => {
+                    clearOutput();
+                    setDeliveryNote(event.target.value);
+                    if (file) setStage("ready");
+                  }}
+                />
+                <small>수신자 이름 다음 열에 동일하게 입력됩니다.</small>
+              </label>
+            </div>
+
+            <div className="rule-row">
+              <span>데이터 관리</span>
+              <p>앱에는 첨부한 학교 기본현황에서 만든 별도 데이터가 포함되어 있습니다. 최신 현황이 필요하면 위 버튼으로 새 엑셀을 올려 현재 작업에 즉시 적용할 수 있습니다.</p>
+            </div>
+            <div className="rule-row">
+              <span>라벨 인쇄</span>
+              <p>아이라벨 {LABEL_SPEC.code} 10칸(84.5×53.5mm) 규격입니다. 인쇄 창에서는 배율을 ‘실제 크기’ 또는 100%로 선택하고 머리글·바닥글을 끄세요.</p>
+            </div>
+          </section>
         )}
 
         {error && (
@@ -585,7 +876,12 @@ export default function Home() {
         <button
           type="button"
           className="primary-button"
-          disabled={!file || stage === "reading" || stage === "processing"}
+          disabled={
+            !file ||
+            stage === "reading" ||
+            stage === "processing" ||
+            (mode === "address" && (directoryLoading || !directory))
+          }
           onClick={() => void runProcess()}
         >
           {stage === "reading" || stage === "processing"
@@ -603,7 +899,9 @@ export default function Home() {
               <h2>
                 {result.kind === "split"
                   ? "행 분리가 완료되었습니다"
-                  : "상장 명단이 완성되었습니다"}
+                  : result.kind === "award"
+                    ? "상장 명단이 완성되었습니다"
+                    : "수상학교 주소 명단이 완성되었습니다"}
               </h2>
               {result.kind === "split" ? (
                 <>
@@ -612,7 +910,7 @@ export default function Home() {
                     {result.sheets.map((sheet) => <span key={sheet.name}>{sheet.name} <strong>+{sheet.addedRows}</strong></span>)}
                   </div>
                 </>
-              ) : (
+              ) : result.kind === "award" ? (
                 <>
                   <p>‘{result.sourceSheet}’ 시트의 작품 {result.sourceRows}건을 학생 {result.recipientRows}명용 행으로 만들었습니다.</p>
                   <div className="sheet-summary">
@@ -620,11 +918,32 @@ export default function Home() {
                     <span>생성 행 <strong>{result.recipientRows}개</strong></span>
                   </div>
                 </>
+              ) : (
+                <>
+                  <p>수상학교 {result.schoolCount}개 중 {result.matchedCount}개의 우편번호와 주소를 찾았습니다.</p>
+                  <div className="sheet-summary">
+                    <span>학교 데이터 <strong>{result.directorySource}</strong></span>
+                    <span>일치 <strong>{result.matchedCount}개교</strong></span>
+                    <span>미확인 <strong>{result.unmatchedNames.length}개교</strong></span>
+                  </div>
+                  {result.unmatchedNames.length > 0 && (
+                    <p className="unmatched-note">
+                      미확인 학교: {result.unmatchedNames.join(", ")}
+                    </p>
+                  )}
+                </>
               )}
             </div>
-            <button type="button" className="download-again" onClick={() => triggerDownload(downloadUrl, result.outputName)}>
-              <Download size={18} /> 다시 다운로드
-            </button>
+            <div className="result-actions">
+              {result.kind === "address" && (
+                <button type="button" className="print-labels" onClick={printAddressLabels}>
+                  <Building2 size={18} /> 라벨 인쇄
+                </button>
+              )}
+              <button type="button" className="download-again" onClick={() => triggerDownload(downloadUrl, result.outputName)}>
+                <Download size={18} /> 다시 다운로드
+              </button>
+            </div>
           </section>
         )}
 

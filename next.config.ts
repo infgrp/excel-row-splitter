@@ -1,17 +1,16 @@
 import type { NextConfig } from "next";
 
-const repositoryName = "excel-row-splitter";
-const isGitHubPages = process.env.GITHUB_ACTIONS === "true";
-const basePath = isGitHubPages ? `/${repositoryName}` : "";
+const repositoryName = process.env.GITHUB_REPOSITORY?.split("/")[1] ?? "";
+const isGitHubPages = process.env.GITHUB_ACTIONS === "true" && repositoryName;
 
 const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
-  basePath,
-  assetPrefix: basePath,
   images: {
     unoptimized: true,
   },
+  basePath: isGitHubPages ? `/${repositoryName}` : "",
+  assetPrefix: isGitHubPages ? `/${repositoryName}/` : "",
 };
 
 export default nextConfig;
